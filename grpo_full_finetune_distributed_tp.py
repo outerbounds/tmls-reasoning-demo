@@ -24,7 +24,7 @@ from torchtune.datasets import ConcatDataset
 # from torchtune.dev.grpo.generation import generate
 from grpo_generation_tqdmless import generate
 # from torchtune.dev.grpo.rewards import batch_shaped_correctness_reward
-from grpo_rewards_aaa_v0 import batch_shaped_correctness_reward
+# from grpo_rewards_aaa_v0 import batch_shaped_correctness_reward
 from torchtune.dev.grpo.types import GRPOStats, GRPOTrajectory
 from torchtune.modules import local_kv_cache
 from torchtune.recipe_interfaces import FTRecipeInterface
@@ -36,6 +36,20 @@ from torchtune.training.checkpointing._checkpoint_client import (
 from tqdm import tqdm
 
 log = utils.get_logger("DEBUG")
+
+def load_reward_server(reward_fn):
+    """Load a reward function based on configuration."""
+    if isinstance(reward_fn, str):
+        module_path = f"rewards_{reward_fn}"
+    else:
+        module_path = reward_fn.get("module", "rewards_gsm8k_default")
+        
+    try:
+        from importlib import import_module
+        module = import_module(module_path)
+        return getattr(module, "RewardServer")
+    except (ImportError, AttributeError) as e:
+        raise ValueError(f"Failed to load reward function: {str(e)}")
 
 class FullGRPOFinetuneRecipeDistributed(FTRecipeInterface):
     """
@@ -177,6 +191,8 @@ class FullGRPOFinetuneRecipeDistributed(FTRecipeInterface):
         self._rng = torch.Generator(self._device).manual_seed(self.seed)
         self._use_pbar = cfg.get("pbar", False)
             
+        RewardServer = load_reward_server(cfg.get('reward_fn', 'gsm8k_default'))
+        self.reward_server = RewardServer() 
 
     def load_checkpoint(self, cfg_checkpointer: DictConfig) -> Dict[str, Any]:
         """
@@ -852,7 +868,7 @@ class FullGRPOFinetuneRecipeDistributed(FTRecipeInterface):
         # responses :: [B x G, L]
         responses = responses.reshape(batch_size, grpo_size, -1)  # [B, G, L]
 
-        rewards, successes = batch_shaped_correctness_reward(
+        rewards, successes = self.reward_server.batch_shaped_correctness_reward(
             self._tokenizer, responses, answers
         )  # [B, G]
         rewards = rewards.to(self._device)
