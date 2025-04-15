@@ -1,0 +1,135 @@
+# Config for multi-node GRPO in dev/grpo_full_finetune_distributed.py
+# using a Llama-3.3-70B-Instruct model
+#
+# To launch on 8 devices, run the following command from root:
+# tune run --nproc_per_node 8 dev/grpo_full_finetune_distributed --config dev/70B_full_grpo
+
+name: llama3_3_70B_grpo
+
+output_dir: /tmp/torchtune/llama3_3_70B/grpo # Metaflow will replace this
+base_model_dir: /tmp/llama-model # Metaflow will replace this
+# output_dir: /tmp/checkpoints/${name}
+# base_model_path: /tmp/Llama-3.3-70B-Instruct/
+
+huggingface:
+  repo_id: meta-llama/Llama-3.3-70B-Instruct
+  allow_patterns:
+    - "*.safetensors"
+    - "*.json"
+    - "original/tokenizer.*"
+
+# Parallelism - same as in 70B full finetuning config
+tensor_parallel_dim: 4
+tensor_parallel_plan:
+  _component_: torchtune.models.llama3.base_llama_tp_plan
+
+# Tokenizer
+tokenizer:
+  _component_: torchtune.models.llama3.llama3_tokenizer
+  path: ${base_model_dir}/original/tokenizer.model
+  # path: /tmp/Llama-3.3-70B-Instruct/original/tokenizer.model
+  max_seq_len: 1024
+
+# Dataset
+dataset:
+  _component_: torchtune.dev.grpo.gsm8k.gsm8k_dataset
+  partition: 0-9/10
+seed: null
+shuffle: False
+
+# Model Arguments
+model:
+  _component_: torchtune.models.llama3_3.llama3_3_70b
+
+checkpointer:
+  _component_: torchtune.training.FullModelHFCheckpointer
+  checkpoint_dir: ${base_model_dir}
+  # checkpoint_dir: /tmp/Llama-3.3-70B-Instruct/
+  checkpoint_files:
+    filename_format: model-{}-of-{}.safetensors
+    max_filename: "00030"
+  recipe_checkpoint: null
+  output_dir: ${output_dir}/checkpoints
+  model_type: LLAMA3
+
+ref_checkpointer:
+  _component_: torchtune.training.FullModelHFCheckpointer
+  checkpoint_dir: ${base_model_dir}
+  # checkpoint_dir: /tmp/Llama-3.3-70B-Instruct/
+  checkpoint_files:
+    filename_format: model-{}-of-{}.safetensors
+    max_filename: "00030"
+  recipe_checkpoint: null
+  output_dir: ${output_dir}/ref_checkpoints
+  model_type: LLAMA3
+
+resume_from_checkpoint: False
+save_every_n_epochs: 1
+
+# Fine-tuning arguments - adjusted for 70B model size
+batch_size: 1
+# gradient_accumulation_steps: 4
+
+grpo_samples: 8
+forward_batch_size: 1
+max_generated_tokens: 512
+top_k: null
+temperature: 1.0
+
+ppo_epochs: 1
+
+# num_steps: 200
+
+clip_grad_norm: 1.0
+
+epochs: 1
+optimizer:
+  _component_: torch.optim.AdamW
+  lr: 5e-6
+  fused: False
+lr_scheduler:
+  _component_: torchtune.training.lr_schedulers.get_cosine_schedule_with_warmup
+  num_warmup_steps: 50
+loss:
+  _component_: torchtune.dev.grpo.loss.GRPOSimpleLoss
+  kl_coeff: 0.01
+  epsilon: 0.2
+
+# Training env
+device: cuda
+
+# Memory management - critical for 70B
+enable_activation_checkpointing: True
+enable_activation_offloading: True
+custom_sharded_layers: ['tok_embeddings', 'output']
+fsdp_cpu_offload: False
+compile: False  # Set to True after validating the setup works
+
+# Reduced precision
+dtype: bf16
+
+# Logging
+metric_logger:
+  _component_: torchtune.training.metric_logging.WandBLogger
+  project: torchtune-grpo
+  log_dir: ${output_dir}/logs
+
+log_every_n_steps: 1
+log_peak_memory_stats: True
+pbar: True
+
+# Profiler (disabled initially for stability)
+profiler:
+  _component_: torchtune.training.setup_torch_profiler
+  enabled: False
+  output_dir: ${output_dir}/profiling_outputs
+  cpu: True
+  cuda: True
+  profile_memory: True
+  with_stack: False
+  record_shapes: True
+  with_flops: False
+  wait_steps: 5
+  warmup_steps: 3
+  active_steps: 2
+  num_cycles: 1
